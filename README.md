@@ -129,11 +129,14 @@ Each delivery carries `X-DocuFlow-Signature: t=<unix>,v1=<hex>` where
 ```python
 import hashlib, hmac, time
 
+
 def verify(secret: str, body: bytes, header: str, tolerance: int = 300) -> bool:
     parts = dict(p.split("=", 1) for p in header.split(","))
     if abs(time.time() - int(parts["t"])) > tolerance:
         return False
-    expected = hmac.new(secret.encode(), f"{parts['t']}.".encode() + body, hashlib.sha256).hexdigest()
+    expected = hmac.new(
+        secret.encode(), f"{parts['t']}.".encode() + body, hashlib.sha256
+    ).hexdigest()
     return hmac.compare_digest(expected, parts["v1"])
 ```
 
