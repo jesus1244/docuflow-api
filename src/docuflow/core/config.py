@@ -53,10 +53,15 @@ class Settings(BaseSettings):
     max_upload_mb: int = 20
 
     # --- AI extraction
-    extractor: Literal["claude", "mock"] = "mock"
+    extractor: Literal["claude", "gemini", "mock"] = "mock"
     anthropic_api_key: SecretStr | None = None
     anthropic_model: str = "claude-opus-5-5"
     anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    gemini_api_key: SecretStr | None = None  # Google AI Studio key
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_use_vertexai: bool = False  # True: Vertex AI with Application Default Credentials
+    google_cloud_project: str | None = None
+    google_cloud_location: str = "global"
 
     # --- webhooks
     webhook_timeout_seconds: float = 10.0

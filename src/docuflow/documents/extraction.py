@@ -1,8 +1,11 @@
 """Document data extraction.
 
-`ClaudeExtractor` sends the PDF/image to Claude and gets back JSON validated against
-`ExtractedData` (structured outputs). `MockExtractor` is a deterministic, offline extractor
-so the whole product can be demoed and tested without an API key.
+Every extractor sends the PDF/image to a model and gets back JSON validated against
+`ExtractedData` (structured outputs), so the rest of the app does not care which provider ran:
+
+- `ClaudeExtractor`: Anthropic Claude.
+- `GeminiExtractor`: Google Gemini, through the Gemini API key or Vertex AI.
+- `MockExtractor`: deterministic and offline, so the product can be demoed and tested for free.
 """
 
 import asyncio
@@ -14,6 +17,10 @@ from typing import Any, Protocol
 
 import anthropic
 from anthropic.types.beta import BetaMessageParam
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
+from pydantic import ValidationError
 from pypdf import PdfReader
 
 from docuflow.core.config import Settings, get_settings
@@ -117,6 +124,93 @@ class ClaudeExtractor:
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
         )
+
+
+class GeminiExtractor:
+    def __init__(self, settings: Settings) -> None:
+        http_options = genai_types.HttpOptions(
+            timeout=120_000,  # milliseconds
+            retry_options=genai_types.HttpRetryOptions(attempts=3),
+        )
+        if settings.gemini_use_vertexai:
+            if not settings.google_cloud_project:
+                raise ExtractionError("GOOGLE_CLOUD_PROJECT is required for Vertex AI")
+            # Credentials come from Application Default Credentials (service account / gcloud).
+            self.client = genai.Client(
+                vertexai=True,
+                project=settings.google_cloud_project,
+                location=settings.google_cloud_location,
+                http_options=http_options,
+            )
+        else:
+            if settings.gemini_api_key is None:
+                raise ExtractionError("GEMINI_API_KEY is not configured")
+            self.client = genai.Client(
+                api_key=settings.gemini_api_key.get_secret_value(), http_options=http_options
+            )
+        self.settings = settings
+        self.config = genai_types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_json_schema=gemini_schema(ExtractedData.model_json_schema()),
+            max_output_tokens=16000,
+        )
+
+    async def extract(self, content: bytes, content_type: str, filename: str) -> ExtractionResult:
+        contents: list[genai_types.Part | str] = [
+            genai_types.Part.from_bytes(data=content, mime_type=content_type),
+            f"File name: {filename}\nExtract the data.",
+        ]
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.settings.gemini_model, contents=contents, config=self.config
+            )
+        except genai_errors.ServerError as exc:
+            raise ExtractionError(
+                f"AI provider temporarily unavailable: {exc.message}", retryable=True
+            ) from exc
+        except genai_errors.APIError as exc:
+            retryable = exc.code == 429  # quota / rate limit
+            message = "temporarily unavailable" if retryable else "rejected the request"
+            raise ExtractionError(
+                f"AI provider {message}: {exc.message}", retryable=retryable
+            ) from exc
+
+        if response.prompt_feedback and response.prompt_feedback.block_reason:
+            raise ExtractionError("The AI model declined to process this document")
+        candidate = response.candidates[0] if response.candidates else None
+        finish = candidate.finish_reason if candidate else None
+        if finish == genai_types.FinishReason.MAX_TOKENS:
+            raise ExtractionError("The AI response was incomplete")
+        if finish not in {None, genai_types.FinishReason.STOP}:
+            raise ExtractionError("The AI model declined to process this document")
+        if not response.text:
+            raise ExtractionError("The AI response was empty")
+        try:
+            data = ExtractedData.model_validate_json(response.text)
+        except ValidationError as exc:
+            raise ExtractionError("The AI response did not match the expected format") from exc
+
+        usage = response.usage_metadata
+        return ExtractionResult(
+            data=data,
+            model=response.model_version or self.settings.gemini_model,
+            input_tokens=(usage.prompt_token_count or 0) if usage else 0,
+            output_tokens=(
+                (usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0)
+                if usage
+                else 0
+            ),
+        )
+
+
+def gemini_schema(node: Any) -> Any:
+    """Drop JSON Schema keywords Gemini does not document (only `default` in our models)."""
+    if isinstance(node, dict):
+        return {k: gemini_schema(v) for k, v in node.items() if k != "default"}
+    if isinstance(node, list):
+        return [gemini_schema(v) for v in node]
+    return node
 
 
 class MockExtractor:
@@ -226,4 +320,6 @@ def get_extractor() -> Extractor:
     settings = get_settings()
     if settings.extractor == "claude":
         return ClaudeExtractor(settings)
+    if settings.extractor == "gemini":
+        return GeminiExtractor(settings)
     return MockExtractor(delay_seconds=0 if settings.environment == "test" else 2.0)

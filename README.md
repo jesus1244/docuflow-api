@@ -6,7 +6,7 @@
 ![Coverage](https://img.shields.io/badge/coverage-89%25-brightgreen)
 
 **AI document processing backend.** Upload invoices, receipts, contracts or purchase orders
-(PDF or image). Claude extracts structured data, a human reviews it, and DocuFlow delivers it
+(PDF or image). An AI model (Claude or Gemini) extracts structured data, a human reviews it, and DocuFlow delivers it
 to other systems through **signed webhooks**, **CSV** or **Google Sheets**, with **live progress
 over WebSockets**.
 
@@ -18,7 +18,7 @@ over WebSockets**.
 
 | Area | What it does |
 |---|---|
-| **AI extraction** | Claude (`claude-opus-5-5`) reads PDFs and images natively and returns JSON validated against a Pydantic schema (structured outputs). Adaptive thinking, refusal fallback, token usage tracked per document. An offline **mock extractor** lets you run everything without an API key. |
+| **AI extraction** | Pluggable providers: **Claude** (`claude-opus-5-5`, adaptive thinking, refusal fallback) or **Gemini** (AI Studio key or Vertex AI). Both read PDFs and images natively and return JSON validated against the same Pydantic schema (structured outputs), with token usage tracked per document. An offline **mock extractor** lets you run everything without an API key. |
 | **Async processing** | Uploads return `202 Accepted`. An **ARQ worker** (Redis) processes the file, retries transient AI errors with backoff, and publishes progress. |
 | **Real time** | `WS /api/v1/ws` streams `document.processing / completed / failed` events per user (Redis pub/sub). |
 | **Webhooks** | Per-user endpoints, Stripe-style **HMAC-SHA256 signatures**, delivery log, exponential-backoff retries, **SSRF protection** (private/loopback IPs blocked, re-checked at send time). |
@@ -39,7 +39,7 @@ flowchart LR
     API --> S3[(S3 storage)]
     API -- enqueue --> R[(Redis)]
     R --> W[ARQ worker]
-    W --> Claude[Claude API]
+    W --> AI[Claude / Gemini API]
     W --> PG
     W -- pub/sub events --> R
     W -- signed POST --> Hooks[Customer webhooks]
@@ -47,7 +47,7 @@ flowchart LR
 ```
 
 **Processing flow:** `POST /documents` → validate magic bytes → store in S3 → row `pending` →
-enqueue → worker sets `processing` (WS event) → Claude extraction → `completed` (WS event) →
+enqueue → worker sets `processing` (WS event) → AI extraction → `completed` (WS event) →
 webhook deliveries enqueued → each delivery signed, sent, retried, logged.
 
 ## Project structure
@@ -58,7 +58,7 @@ Organized **by domain** (following the [fastapi-best-practices](https://github.c
 src/docuflow/
 ├── core/          # config, database, security, redis, storage, queue, events, logging, errors
 ├── auth/          # users, JWT + refresh rotation, API keys
-├── documents/     # upload, extraction (Claude/mock), tasks, stats, exports
+├── documents/     # upload, extraction (Claude/Gemini/mock), tasks, stats, exports
 ├── webhooks/      # endpoints, signing, delivery + retries, SSRF guard
 ├── integrations/  # Google Sheets
 ├── realtime.py    # WebSocket endpoint
@@ -93,7 +93,9 @@ uv run fastapi dev src/docuflow/main.py         # API with reload
 uv run arq docuflow.worker.WorkerSettings        # worker (second terminal)
 ```
 
-**Use the real AI extractor:** set `EXTRACTOR=claude` and `ANTHROPIC_API_KEY=...` in `.env`.
+**Use a real AI extractor:** in `.env`, set `EXTRACTOR=claude` and `ANTHROPIC_API_KEY=...`, or
+`EXTRACTOR=gemini` and `GEMINI_API_KEY=...` (or `GEMINI_USE_VERTEXAI=true` plus `GOOGLE_CLOUD_PROJECT`
+for Vertex AI). Then run `docker compose up -d --build api worker`.
 
 ## API overview
 
@@ -152,12 +154,14 @@ uv run pytest                                           # 49 tests, real Postgre
 
 - Tests run the **Alembic migrations** to build the schema (so migrations are tested, up and down).
 - The job queue runs **inline** in tests, so upload → extraction → webhook is tested end to end.
-- External HTTP is mocked with `respx`; Redis with `fakeredis`; the Claude client with a fake.
+- External HTTP is mocked with `respx`; Redis with `fakeredis`; the Claude and Gemini clients with fakes.
 
 ## Design decisions
 
 - **ARQ over Celery**: native asyncio, so the worker reuses the same async SQLAlchemy code as the API.
-- **Structured outputs** instead of prompt-and-parse: Claude's response is validated against the same
+- **Provider-agnostic extraction**: one `Extractor` protocol, so switching between Claude and Gemini is a
+  config change and nothing else in the app knows which model ran.
+- **Structured outputs** instead of prompt-and-parse: the model's response is validated against the same
   `ExtractedData` model the API exposes, so there is a single source of truth for the schema.
 - **Magic-byte detection**: the client's `Content-Type` is never trusted.
 - **404 instead of 403** for other users' resources, so IDs are not leaked.
