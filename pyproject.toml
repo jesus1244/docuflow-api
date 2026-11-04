@@ -1,0 +1,99 @@
+[project]
+name = "docuflow"
+version = "0.1.0"
+description = "AI document processing API: upload PDFs, extract structured data with Claude, deliver it via webhooks, CSV and Google Sheets."
+authors = [{ name = "jesus1244", email = "jesus.1344@hotmail.com" }]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "aioboto3>=15.5.0",
+    "alembic>=1.20.1",
+    "anthropic>=2.5.0",
+    "arq>=0.28.0",
+    "asyncpg>=0.32.0",
+    "fastapi[standard]>=0.162.0",
+    "gspread>=6.2.1",
+    "pwdlib[argon2]>=0.3.1",
+    "pydantic-settings>=2.16.2",
+    "pydantic[email]>=2.14.2",
+    "pyjwt>=2.15.1",
+    "pypdf>=6.21.4",
+    "python-multipart>=0.0.33",
+    "redis>=5.3.1",
+    "sqlalchemy[asyncio]>=2.1.8",
+    "structlog>=26.1.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "asgi-lifespan>=2.1.0",
+    "fakeredis>=2.40.0",
+    "mypy>=2.4.1",
+    "pre-commit>=4.7.0",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "respx>=0.23.1",
+    "ruff>=0.17.3",
+    "testcontainers[postgres]>=4.15.0",
+    "types-aioboto3>=15.5.0",
+]
+
+# ---------------------------------------------------------------- tooling
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",   # pycodestyle + pyflakes
+    "I",             # isort
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "SIM",           # simplify
+    "N",             # naming
+    "S",             # bandit (security)
+    "ASYNC",         # async pitfalls
+    "RUF",
+    "PL",            # pylint subset
+    "PT",            # pytest style
+    "TID",           # tidy imports
+]
+ignore = ["PLR0913", "PLR0917", "PLR2004", "B008", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S107", "PLR2004", "ARG001", "PLC0415"]
+"migrations/**" = ["N999", "E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.File", "fastapi.Form"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+packages = ["docuflow"]
+
+[[tool.mypy.overrides]]
+module = ["arq.*", "gspread.*", "aioboto3.*", "testcontainers.*", "fakeredis.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["ignore::DeprecationWarning:testcontainers.*"]
+
+[tool.coverage.run]
+source = ["src/docuflow"]
+concurrency = ["greenlet", "thread"]
+omit = ["src/docuflow/worker.py"]

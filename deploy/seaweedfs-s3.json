@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "docuflow",
+      "credentials": [{ "accessKey": "docuflow", "secretKey": "docuflow-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

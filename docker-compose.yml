@@ -1,0 +1,76 @@
+# Local stack: API + worker + Postgres + Redis + MinIO (S3-compatible storage).
+#   docker compose up --build
+# API docs: http://localhost:8000/docs  ·  MinIO console: http://localhost:9001
+
+x-app: &app
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql+asyncpg://docuflow:docuflow@postgres:5432/docuflow
+    REDIS_URL: redis://redis:6379/0
+    STORAGE_BACKEND: s3
+    S3_ENDPOINT_URL: http://s3:8333
+    S3_ACCESS_KEY_ID: docuflow
+    S3_SECRET_ACCESS_KEY: docuflow-secret
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    s3: { condition: service_healthy }
+  restart: unless-stopped
+
+services:
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *app
+    ports: ["8000:8000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    <<: *app
+    command: ["arq", "docuflow.worker.WorkerSettings"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: docuflow
+      POSTGRES_PASSWORD: docuflow
+      POSTGRES_DB: docuflow
+    ports: ["5433:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docuflow"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  s3:
+    image: chrislusf/seaweedfs:latest
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json"]
+    ports: ["8333:8333"]
+    volumes:
+      - s3-data:/data
+      - ./deploy/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/status || exit 1"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  postgres-data:
+  s3-data:
